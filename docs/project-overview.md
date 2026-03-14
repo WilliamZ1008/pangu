@@ -10,10 +10,12 @@ This repository should be treated as a paper-first offline research codebase:
 - canonical EduBench loading
 - deterministic shared-8 benchmark splits
 - traceable per-sample predictions
+- calibrated `1B -> 7B` cascade routing
+- prompt-specialized `7B` refinement without fine-tuning
 - explicit baseline vs diagnostic system modes
 - CPU-side recomputation of summaries from saved predictions
 
-## 2. Current state after repo correction
+## 2. Current state after final implementation
 
 The important offline path is now:
 
@@ -27,13 +29,39 @@ The important offline path is now:
    - `1b_only`
    - `7b_only`
    - `cascade_final`
-3. `experiment_runner.py`
+   - normalized request -> router -> risk -> specialist -> trace flow
+3. `core/`
+   - `schemas.py`
+   - `request_normalizer.py`
+   - `expert_router.py`
+   - `risk_calibrator.py`
+   - `route_trace.py`
+   - `prompting/` for router/specialist/repair/self-check prompt assembly
+4. `services/`
+   - `model_clients.py` for local vLLM access
+   - `output_parser.py` for router/prediction normalization
+   - `result_store.py` for predictions/traces/summaries
+5. `evaluation/`
+   - `metrics.py`
+   - `judge.py`
+   - `summarize.py`
+6. `experiment_runner.py`
    - shared artifact writing for serial and parallel runs
-4. `evaluator.py`
+7. `evaluator.py`
    - summary recomputation from saved predictions
    - optional post-hoc judge
 
-## 3. What is intentionally secondary
+## 3. Runtime notes verified on 2026-03-14
+
+- `7B` vLLM replicas are currently reachable on ports `8000`, `8001`, `8002`, and `8003`.
+- The configured `1B` endpoint `172.17.0.1:1040` is not currently serving.
+- The final cascade now degrades safely when `1B` is unavailable:
+  - the router stage records the endpoint error
+  - calibrated risk forces escalation
+  - `7B` still produces a valid final artifact
+- `7b_only`, `cascade_final`, and `evaluator.py --predictions ...` were live-tested successfully.
+
+## 4. What is intentionally secondary
 
 The API/frontend path is not the main project story right now.
 
@@ -42,7 +70,3 @@ The API/frontend path is not the main project story right now.
 - `frontend/` should be treated as post-experiment work.
 
 That is a deliberate priority choice, not an oversight: benchmark stability matters more than chat-serving polish.
-
-## 4. Immediate next work after correction
-
-After the correction pass, the next phase should focus on the final `1B -> 7B` adaptive cascade defined in `docs/02-final-project-implementation-spec.md`, not on product refactoring.

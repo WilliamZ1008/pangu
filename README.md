@@ -1,62 +1,19 @@
 # Pangu Offline Research Workspace
 
-`/opt/pangu/pangu` 现在的主目标是一个**离线、可追踪、可复现实验**的教育 Agent 代码库，不是产品化聊天服务。
+`/opt/pangu/pangu` is now organized around a paper-first offline experiment pipeline built on EduBench, not around chat-serving.
 
-## 当前主线
+## Final system direction
 
-- 共享主基准只使用 EduBench shared-8:
-  - `Q&A`, `AG`, `EC`, `IP`, `PCC`, `PLS`, `QG`, `TMG`
-- `ES` 被降级为补充任务，不进入主双语表。
-- 离线实验入口优先于 API / frontend。
-- 所有运行都应保存：
-  - prediction JSONL
-  - trace JSONL
-  - summary JSON
-  - optional judge cache
+The main implementation target is a prompt-specialized `1B -> 7B` adaptive cascade:
 
-## 目录重点
+1. normalize one EduBench sample
+2. ask `1B` for a structured router output
+3. compute calibrated risk
+4. accept the `1B` draft on low risk
+5. escalate to one prompt-specialized `7B` role on high risk
+6. validate and save the final prediction and full route trace
 
-```text
-/opt/pangu/pangu
-├── core/                  # 共享 Prompt 与核心逻辑
-├── docs/                  # 研究规格与项目说明
-├── outputs/
-│   ├── predictions/       # 每次运行的逐样本预测
-│   ├── summaries/         # 每次运行的汇总 JSON
-│   ├── traces/            # 每次运行的路由追踪
-│   ├── eval_cache/        # 可复用 judge 缓存
-│   └── results/           # 历史遗留结果
-├── runtime/               # 本地数据库、日志、密钥
-├── config.py              # 可复现配置
-├── data_loader.py         # Canonical EduBench loader
-├── difficulty_decision.py # rule_v2 baseline router
-├── inference_engine.py    # 系统模式编排与模型调用
-├── experiment_runner.py   # 单进程/并行共享运行器
-├── evaluator.py           # 预测后评估与 summary 重算
-├── main.py                # 单进程实验入口
-├── main_parallel.py       # 并行实验入口
-└── run_server.py          # 遗留 API 入口
-```
-
-## 离线实验运行
-
-单进程：
-
-```bash
-cd /opt/pangu/pangu
-python main.py --system 7b_only --lang zh --split dev
-python main.py --system cascade_final --lang zh --split test
-```
-
-并行：
-
-```bash
-cd /opt/pangu/pangu
-python main_parallel.py --system rule_v2 --lang zh --split test --max-workers 4
-python main_parallel.py --system 1b_only --lang en --split test --max-workers 4
-```
-
-可用系统名：
+Supported experiment systems:
 
 - `rule_v2`
 - `current_v3`
@@ -64,11 +21,103 @@ python main_parallel.py --system 1b_only --lang en --split test --max-workers 4
 - `7b_only`
 - `cascade_final`
 
-如果不加 `--do-judge`，summary 会明确标记为 `diagnostic only`，避免把未评估结果误当成论文结论。
+## Important directories
 
-## 预测后重算评估
+```text
+/opt/pangu/pangu
+├── core/
+│   ├── schemas.py
+│   ├── request_normalizer.py
+│   ├── expert_router.py
+│   ├── risk_calibrator.py
+│   ├── route_trace.py
+│   ├── prompts.py
+│   └── prompting/
+├── services/
+│   ├── model_clients.py
+│   ├── output_parser.py
+│   └── result_store.py
+├── evaluation/
+│   ├── metrics.py
+│   ├── judge.py
+│   └── summarize.py
+├── outputs/
+│   ├── predictions/
+│   ├── traces/
+│   ├── summaries/
+│   └── eval_cache/
+├── config.py
+├── data_loader.py
+├── inference_engine.py
+├── experiment_runner.py
+├── main.py
+├── main_parallel.py
+└── evaluator.py
+```
 
-模型预测保存后，可以不重新跑 GPU，直接重算 summary，或者补做可选 judge：
+## Core workflow
+
+- `data_loader.py`: canonical shared-8 loading with stable sample IDs and deterministic splits
+- `core/request_normalizer.py`: final normalized sample schema
+- `core/prompting/`: all final router/specialist/repair prompts
+- `services/model_clients.py`: all vLLM HTTP calls
+- `services/output_parser.py`: router parsing and output validation
+- `inference_engine.py`: orchestration only
+- `experiment_runner.py`: shared batch runner for serial and parallel runs
+- `evaluation/`: deterministic metrics, summaries, and optional judge cache
+
+## Running the system
+
+Start one `1B` service:
+
+```bash
+cd /opt/pangu/pangu
+bash scripts/run_service_1b.sh
+```
+
+Start one stable `7B` service:
+
+```bash
+cd /opt/pangu/pangu
+bash scripts/run_service_7b.sh
+```
+
+Run one experiment:
+
+```bash
+cd /opt/pangu/pangu
+python main.py --system cascade_final --lang zh --split test
+```
+
+Run one parallel experiment:
+
+```bash
+cd /opt/pangu/pangu
+python main_parallel.py --system cascade_final --lang zh --split test --max-workers 4
+```
+
+Convenience wrappers:
+
+```bash
+bash scripts/run_calibration.sh
+bash scripts/run_eval.sh
+bash scripts/run_eval_parallel.sh
+```
+
+## Output artifacts
+
+Every run writes:
+
+- one prediction JSONL
+- one route trace JSONL
+- one summary JSON
+- optional judge cache entries when `--do-judge` is used
+
+If `--do-judge` is omitted, summaries are explicitly marked as diagnostic-only.
+
+## Post-hoc evaluation
+
+Predictions can be rescored without rerunning GPUs:
 
 ```bash
 cd /opt/pangu/pangu
@@ -76,24 +125,12 @@ python evaluator.py --predictions outputs/predictions/<run>.jsonl
 python evaluator.py --predictions outputs/predictions/<run>.jsonl --do-judge
 ```
 
-## 路径约定
+## API/frontend status
 
-- 数据集根目录：`/opt/pangu/EduBench/data/all_data`
-- 1B 模型路径：`/opt/pangu/openPangu-Embedded-1B-V1.1`
-- 7B 模型路径：`/opt/pangu/openPangu-Embedded-7B-V1.1`
-- judge 密钥优先读取环境变量 `GPT5_API_KEY`，否则读取 `runtime/secrets/GPT-key`
+The API/frontend path is still secondary:
 
-## API / Frontend 状态
+- `core/agent.py` is incomplete
+- `api/routes/chat.py` depends on missing serving glue
+- `frontend/` should not block offline experiments
 
-- `core/agent.py` 仍是不完整状态。
-- `api/routes/chat.py` 依赖缺失的 `get_agent_core`。
-- `frontend/app.py` 不应阻塞离线实验。
-
-当前结论很直接：**先稳定离线 benchmark，再回头修 API/frontend。**
-
-## 文档入口
-
-- `docs/01-repo-correction-spec.md`
-- `docs/02-final-project-implementation-spec.md`
-- `docs/03-paper-experiment-spec.md`
-- `docs/project-overview.md`
+The intended order is still: stabilize offline benchmark first, then return to demo surfaces.

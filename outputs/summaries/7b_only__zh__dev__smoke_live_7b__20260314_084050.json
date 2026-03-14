@@ -1,0 +1,46 @@
+{
+  "system_name": "7b_only",
+  "lang": "zh",
+  "split": "dev",
+  "generated_at": "2026-03-14T08:40:50.844584",
+  "warnings": [
+    "Judge not run. This summary is diagnostic only and must not be presented as a paper-ready result."
+  ],
+  "overall_summary": {
+    "total_items": 1,
+    "format_validity": 1.0,
+    "task_match_rate": 0.0,
+    "latency_avg": 19.319716103025712,
+    "latency_p50": 19.319716103025712,
+    "latency_p90": 19.319716103025712,
+    "accepted_by_1b_rate": 0.0,
+    "7b_invocation_rate": 1.0,
+    "judge_score_avg": null
+  },
+  "per_task_summary": {
+    "Q&A": {
+      "total_items": 1,
+      "format_validity": 1.0,
+      "task_match_rate": 0.0,
+      "latency_avg": 19.319716103025712,
+      "latency_p50": 19.319716103025712,
+      "latency_p90": 19.319716103025712,
+      "accepted_by_1b_rate": 0.0,
+      "7b_invocation_rate": 1.0,
+      "judge_score_avg": null
+    }
+  },
+  "per_route_summary": {
+    "7b_only:reasoning": {
+      "total_items": 1,
+      "format_validity": 1.0,
+      "task_match_rate": 0.0,
+      "latency_avg": 19.319716103025712,
+      "latency_p50": 19.319716103025712,
+      "latency_p90": 19.319716103025712,
+      "accepted_by_1b_rate": 0.0,
+      "7b_invocation_rate": 1.0,
+      "judge_score_avg": null
+    }
+  }
+}

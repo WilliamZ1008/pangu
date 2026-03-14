@@ -1,34 +1,39 @@
 """
-Shared offline experiment runner used by both main entrypoints.
+Shared batch runner for serial and parallel offline experiments.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-import json
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
-from config import (
-    OUTPUT_EVAL_CACHE_DIR,
-    OUTPUT_PREDICTION_DIR,
-    OUTPUT_SUMMARY_DIR,
-    OUTPUT_TRACE_DIR,
-)
-from data_loader import DataLoader, DataItem
-from evaluator import compute_basic_summary, evaluate_prediction_rows
+from core.request_normalizer import RequestNormalizer
+from data_loader import DataLoader
+from evaluation.judge import JudgeRunner
+from evaluation.metrics import MetricSuite
+from evaluation.summarize import SummaryBuilder
 from inference_engine import InferenceEngine, SUPPORTED_SYSTEMS
+from services.result_store import ResultStore
 
 try:
     from tqdm import tqdm
-except Exception:  # pragma: no cover - tqdm is optional
+except Exception:  # pragma: no cover
     tqdm = None
 
 
 class ExperimentRunner:
-    """Single implementation path for serial and parallel offline runs."""
+    """Run one or more offline experiment configurations with shared semantics."""
 
-    def __init__(self, data_loader: Optional[DataLoader] = None, engine: Optional[InferenceEngine] = None):
+    def __init__(
+        self,
+        data_loader: Optional[DataLoader] = None,
+        engine: Optional[InferenceEngine] = None,
+        result_store: Optional[ResultStore] = None,
+    ):
         self.data_loader = data_loader or DataLoader()
         self.engine = engine or InferenceEngine()
+        self.result_store = result_store or ResultStore()
+        self.normalizer = RequestNormalizer()
+        self.metric_suite = MetricSuite()
+        self.summary_builder = SummaryBuilder(self.metric_suite)
 
     def run(
         self,
@@ -39,7 +44,7 @@ class ExperimentRunner:
         sample_limit: Optional[int] = None,
         max_workers: int = 1,
         output_tag: str = "",
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, object]:
         if system_name not in SUPPORTED_SYSTEMS:
             raise ValueError(f"Unsupported system: {system_name}")
 
@@ -49,20 +54,16 @@ class ExperimentRunner:
 
         prediction_rows, trace_rows = self._run_samples(samples, system_name, split, max_workers=max_workers)
 
-        warnings = []
+        warnings: List[str] = []
         if do_judge:
-            prediction_rows = evaluate_prediction_rows(
-                prediction_rows,
-                cache_dir=Path(OUTPUT_EVAL_CACHE_DIR),
-            )
+            prediction_rows = JudgeRunner().evaluate_rows(prediction_rows)
         else:
             warnings.append(
                 "Judge not run. This summary is diagnostic only and must not be presented as a paper-ready result."
             )
 
-        summary = compute_basic_summary(
+        summary = self.summary_builder.build(
             prediction_rows,
-            trace_rows=trace_rows,
             system_name=system_name,
             lang=lang,
             split=split,
@@ -70,19 +71,15 @@ class ExperimentRunner:
         )
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_name = self._build_base_name(system_name, lang, split, timestamp, output_tag)
-        prediction_path = Path(OUTPUT_PREDICTION_DIR) / f"{base_name}.jsonl"
-        trace_path = Path(OUTPUT_TRACE_DIR) / f"{base_name}.jsonl"
-        summary_path = Path(OUTPUT_SUMMARY_DIR) / f"{base_name}.json"
-
-        self._write_jsonl(prediction_path, prediction_rows)
-        self._write_jsonl(trace_path, trace_rows)
-        self._write_json(summary_path, summary)
+        run_name = self._build_run_name(system_name, lang, split, timestamp, output_tag)
+        prediction_file = self.result_store.save_predictions(run_name, prediction_rows)
+        trace_file = self.result_store.save_traces(run_name, trace_rows)
+        summary_file = self.result_store.save_summary(run_name, summary)
 
         return {
-            "prediction_file": str(prediction_path),
-            "trace_file": str(trace_path),
-            "summary_file": str(summary_path),
+            "prediction_file": prediction_file,
+            "trace_file": trace_file,
+            "summary_file": summary_file,
             "summary": summary,
         }
 
@@ -94,11 +91,11 @@ class ExperimentRunner:
         sample_limit: Optional[int] = None,
         max_workers: int = 1,
         output_tag: str = "",
-    ) -> List[Dict[str, Any]]:
-        runs = []
+    ) -> List[Dict[str, object]]:
+        outputs = []
         for plan in split_plan:
             for system_name in system_names:
-                runs.append(
+                outputs.append(
                     self.run(
                         system_name=system_name,
                         lang=plan["lang"],
@@ -109,31 +106,25 @@ class ExperimentRunner:
                         output_tag=output_tag,
                     )
                 )
-        return runs
+        return outputs
 
-    def _load_samples(self, lang: str, split: str) -> List[DataItem]:
+    def _load_samples(self, lang: str, split: str):
         if lang == "all":
-            samples: List[DataItem] = []
+            samples = []
             for lang_name in ("zh", "en"):
                 samples.extend(self.data_loader.load_primary_split(lang_name, split))
             return samples
         return self.data_loader.load_primary_split(lang, split)
 
-    def _run_samples(
-        self,
-        samples: List[DataItem],
-        system_name: str,
-        split: str,
-        max_workers: int = 1,
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _run_samples(self, samples, system_name: str, split: str, max_workers: int = 1):
         sample_order = {sample.sample_id: index for index, sample in enumerate(samples)}
-        prediction_rows: List[Dict[str, Any]] = []
-        trace_rows: List[Dict[str, Any]] = []
+        prediction_rows = []
+        trace_rows = []
 
         if max_workers <= 1:
-            iterator: Iterable[DataItem] = samples
+            iterator: Iterable = samples
             if tqdm is not None:
-                iterator = tqdm(samples, desc=f"{system_name}:{split}", leave=False)
+                iterator = tqdm(samples, desc=system_name, leave=False)
             for sample in iterator:
                 prediction_row, trace_row = self._process_sample(sample, system_name, split)
                 prediction_rows.append(prediction_row)
@@ -146,12 +137,7 @@ class ExperimentRunner:
                 }
                 future_iterator = as_completed(future_map)
                 if tqdm is not None:
-                    future_iterator = tqdm(
-                        future_iterator,
-                        total=len(samples),
-                        desc=f"{system_name}:{split}:parallel",
-                        leave=False,
-                    )
+                    future_iterator = tqdm(future_iterator, total=len(samples), desc=f"{system_name}:parallel", leave=False)
                 for future in future_iterator:
                     prediction_row, trace_row = future.result()
                     prediction_rows.append(prediction_row)
@@ -161,99 +147,87 @@ class ExperimentRunner:
         trace_rows.sort(key=lambda row: sample_order[row["sample_id"]])
         return prediction_rows, trace_rows
 
-    def _process_sample(
-        self,
-        sample: DataItem,
-        system_name: str,
-        split: str,
-    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    def _process_sample(self, sample, system_name: str, split: str):
+        normalized = self.normalizer.normalize_data_item(sample)
         try:
-            result = self.engine.run_system(system_name, sample)
+            result, trace, normalized = self.engine.run_system(system_name, normalized)
+            prediction_row = result.to_dict()
+            trace_row = trace.to_dict()
         except Exception as error:
-            result = {
+            prediction_row = {
+                "sample_id": normalized.sample_id,
+                "system_name": system_name,
+                "task_key": normalized.task_key,
+                "task_type": normalized.task_type,
+                "task_family": normalized.task_family,
+                "subject": normalized.subject,
+                "lang": normalized.lang,
                 "route": "error",
-                "route_reason": f"runner exception: {error}",
-                "prediction": f"[RUNNER_ERROR: {error}]",
-                "latency_seconds": 0.0,
-                "format_valid": False,
-                "raw_model_outputs": {},
-                "prompt_templates": [],
                 "accepted_by_1b": None,
-                "seven_b_refine_invoked": False,
-                "self_eval": None,
+                "specialist_name": "",
+                "risk_score": None,
+                "prediction": f"[RUNNER_ERROR: {error}]",
+                "ground_truth": normalized.ground_truth,
+                "format_valid": False,
+                "latency_seconds": 0.0,
+                "tokens_1b": 0,
+                "tokens_7b": 0,
+                "raw_model_outputs": {"error": str(error)},
+                "judge_score": None,
+                "route_reason": str(error),
+                "expected_output_format": normalized.expected_output_format,
+                "metadata": normalized.metadata,
+            }
+            trace_row = {
+                "sample_id": normalized.sample_id,
+                "system_name": system_name,
+                "accepted_by_1b": None,
+                "risk_score": 0.0,
+                "risk_threshold": 0.0,
+                "specialist_name": "",
+                "format_valid": False,
+                "latency_1b": 0.0,
+                "latency_7b": 0.0,
+                "tokens_1b": 0,
+                "tokens_7b": 0,
+                "notes": [str(error)],
+                "router_output": {},
+                "risk_features": {},
+                "raw_outputs": {},
             }
 
-        seven_b_invoked = any(
-            stage.get("tier") == "7b"
-            for stage in result.get("raw_model_outputs", {}).values()
-            if isinstance(stage, dict)
+        prediction_row.update(
+            {
+                "split": split,
+                "prompt": normalized.prompt_text,
+                "question": normalized.question,
+                "source_file": normalized.metadata.get("source_file", ""),
+                "source_row": normalized.metadata.get("source_row", 0),
+            }
         )
 
-        prediction_row = {
-            "system": system_name,
-            "split": split,
-            "sample_id": sample.sample_id,
-            "task_key": sample.task_key,
-            "task_type": sample.task_type,
-            "task_family": sample.task_family,
-            "expected_output_format": sample.expected_output_format,
-            "lang": sample.lang,
-            "route": result["route"],
-            "route_reason": result["route_reason"],
-            "prediction": result["prediction"],
-            "ground_truth": sample.ground_truth,
-            "latency_seconds": result["latency_seconds"],
-            "format_valid": result["format_valid"],
-            "raw_model_outputs": result.get("raw_model_outputs", {}),
-            "prompt": sample.prompt,
-            "canonical_fields": sample.canonical_fields,
-            "source_file": sample.source_file,
-            "source_row": sample.source_row,
-            "accepted_by_1b": result.get("accepted_by_1b"),
-            "seven_b_invoked": seven_b_invoked,
-        }
+        trace_row.update(
+            {
+                "split": split,
+                "task_key": normalized.task_key,
+                "task_type": normalized.task_type,
+                "task_family": normalized.task_family,
+                "subject": normalized.subject,
+                "lang": normalized.lang,
+                "route": prediction_row["route"],
+                "route_reason": prediction_row.get("route_reason", ""),
+                "latency_seconds": prediction_row["latency_seconds"],
+                "seven_b_invoked": prediction_row["tokens_7b"] > 0,
+            }
+        )
 
-        self_eval = result.get("self_eval") or {}
-        trace_row = {
-            "system": system_name,
-            "split": split,
-            "sample_id": sample.sample_id,
-            "task_key": sample.task_key,
-            "task_type": sample.task_type,
-            "task_family": sample.task_family,
-            "lang": sample.lang,
-            "route": result["route"],
-            "route_reason": result["route_reason"],
-            "prompt_templates": result.get("prompt_templates", []),
-            "latency_seconds": result["latency_seconds"],
-            "format_valid": result["format_valid"],
-            "accepted_by_1b": result.get("accepted_by_1b"),
-            "seven_b_invoked": seven_b_invoked,
-            "self_eval_label": self_eval.get("label"),
-            "self_eval_parse_ok": self_eval.get("parse_ok"),
-            "self_eval_raw_output": self_eval.get("raw_output"),
-            "source_file": sample.source_file,
-            "source_row": sample.source_row,
-        }
+        metric_row = self.metric_suite.score_prediction(normalized, prediction_row["prediction"], trace_row)
+        prediction_row.update(metric_row)
+        prediction_row["seven_b_invoked"] = prediction_row["tokens_7b"] > 0
+        prediction_row.setdefault("judge_score", None)
         return prediction_row, trace_row
 
-    def _build_base_name(
-        self,
-        system_name: str,
-        lang: str,
-        split: str,
-        timestamp: str,
-        output_tag: str = "",
-    ) -> str:
+    def _build_run_name(self, system_name: str, lang: str, split: str, timestamp: str, output_tag: str) -> str:
         if output_tag:
             return f"{system_name}__{lang}__{split}__{output_tag}__{timestamp}"
         return f"{system_name}__{lang}__{split}__{timestamp}"
-
-    def _write_jsonl(self, path: Path, rows: Sequence[Dict[str, Any]]) -> None:
-        with path.open("w", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    def _write_json(self, path: Path, payload: Dict[str, Any]) -> None:
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
