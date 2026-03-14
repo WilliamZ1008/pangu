@@ -1,57 +1,48 @@
 # Project Overview
 
-Date: 2026-03-13
+Date: 2026-03-14
 Active branch: `agentv4`
 
-## 1. What this repo is trying to achieve
+## 1. Repo objective
 
-This repository is not just a chatbot demo. Its real target is a publishable education agent built on Huawei Pangu Embedded 7B, with a research story around:
+This repository should be treated as a paper-first offline research codebase:
 
-- metacognitive routing
-- task-specific prompting
-- fast/slow reasoning control
-- reproducible EduBench evaluation
+- canonical EduBench loading
+- deterministic shared-8 benchmark splits
+- traceable per-sample predictions
+- explicit baseline vs diagnostic system modes
+- CPU-side recomputation of summaries from saved predictions
 
-The objective stated in `docs/purpose.md` is to turn the existing education QA system into a paper-ready agent that can be defended both academically and engineering-wise.
+## 2. Current state after repo correction
 
-## 2. Where the current branch stands
+The important offline path is now:
 
-As of 2026-03-13, the local branch layout is:
+1. `data_loader.py`
+   - canonical prompt construction
+   - stable `sample_id`
+   - deterministic task-stratified splits
+2. `inference_engine.py`
+   - `rule_v2`
+   - `current_v3`
+   - `1b_only`
+   - `7b_only`
+   - `cascade_final`
+3. `experiment_runner.py`
+   - shared artifact writing for serial and parallel runs
+4. `evaluator.py`
+   - summary recomputation from saved predictions
+   - optional post-hoc judge
 
-- `main`: initial Pangu LLM scaffold
-- `frontend-optimization`: frontend-focused iteration
-- `agentv3`: ReAct, tool use, and dynamic profiling direction
-- `evaluate`: evaluation pipeline plus 4x2 parallel inference
-- `agentv4`: local cleanup branch, currently aligned with commit `5f30237`
+## 3. What is intentionally secondary
 
-That means `agentv4` is the right place to continue, because it already contains the evaluation additions from `evaluate` and now has a cleaner directory layout.
+The API/frontend path is not the main project story right now.
 
-## 3. Code structure after cleanup
+- `core/agent.py` is incomplete.
+- `api/routes/chat.py` expects a helper that does not exist.
+- `frontend/` should be treated as post-experiment work.
 
-- `api/`: FastAPI app, routes, schemas, dependency wiring
-- `core/`: agent loop, prompts, memory, tool registry
-- `db/`: SQLAlchemy setup and models
-- `frontend/`: Streamlit interface for interactive testing
-- `services/`: session and profile logic
-- `scripts/`: operational scripts for vLLM, Docker, and frontend launch
-- `docs/`: research notes, purpose, and evaluation plan
-- `outputs/results/`: generated evaluation outputs
-- `runtime/`: local-only state such as SQLite, logs, and secrets
+That is a deliberate priority choice, not an oversight: benchmark stability matters more than chat-serving polish.
 
-## 4. What is still mixed conceptually
+## 4. Immediate next work after correction
 
-The repository is cleaner structurally now, but the implementation still has a version-name mismatch:
-
-- branch name: `agentv4`
-- many code symbols/docs: `AgentV3`
-
-This is only naming debt. It does not block the next step, but it is worth cleaning when you start the next actual algorithm iteration.
-
-## 5. Recommended next step on agentv4
-
-To support the paper direction in `docs/purpose.md`, the next implementation pass should focus on:
-
-1. extract a dedicated `prompt_manager.py` for task-specific fast/slow templates
-2. separate the cognitive router logic from the raw inference client
-3. define one stable experiment entrypoint for baseline vs proposed runs
-4. standardize result schemas so paper tables can be generated directly from `outputs/results/`
+After the correction pass, the next phase should focus on the final `1B -> 7B` adaptive cascade defined in `docs/02-final-project-implementation-spec.md`, not on product refactoring.

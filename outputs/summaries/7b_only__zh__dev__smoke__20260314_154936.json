@@ -1,0 +1,22 @@
+{
+  "system": "7b_only",
+  "lang": "zh",
+  "split": "dev",
+  "generated_at": "2026-03-14T15:49:36.303558",
+  "total_items": 0,
+  "warnings": [
+    "Judge not run. This summary is diagnostic only and must not be presented as a paper-ready result."
+  ],
+  "judge_status": "not_run",
+  "format_valid_rate": 0.0,
+  "average_latency_seconds": 0.0,
+  "latency_p50_seconds": 0.0,
+  "latency_p90_seconds": 0.0,
+  "route_counts": {},
+  "task_counts": {},
+  "per_task_format_validity": {},
+  "accepted_by_1b_rate": null,
+  "seven_b_invocation_rate": 0.0,
+  "judge_average_score": null,
+  "trace_rows": 0
+}
