@@ -154,6 +154,46 @@ You must satisfy this output contract:
 """
 
 
+GENERIC_REFINE_TEMPLATE_ZH = """你是一个通用 7B 教育助手，需要在不使用专家角色设定的情况下改进答案。
+
+原始任务:
+{prompt_text}
+
+1B 路由摘要:
+- predicted_task_family: {predicted_task_family}
+- predicted_subject: {predicted_subject}
+- confidence_label: {confidence_label}
+- confidence_score: {confidence_score}
+- tool_hint: {tool_hint}
+
+1B 草稿:
+{draft_answer}
+
+请直接改进答案，并严格满足以下输出契约:
+{output_instruction}
+"""
+
+
+GENERIC_REFINE_TEMPLATE_EN = """You are a general 7B educational assistant. Improve the answer without using a specialist role prompt.
+
+Original task:
+{prompt_text}
+
+1B router summary:
+- predicted_task_family: {predicted_task_family}
+- predicted_subject: {predicted_subject}
+- confidence_label: {confidence_label}
+- confidence_score: {confidence_score}
+- tool_hint: {tool_hint}
+
+1B draft:
+{draft_answer}
+
+Improve the answer and strictly satisfy this output contract:
+{output_instruction}
+"""
+
+
 FORMAT_REPAIR_TEMPLATE_ZH = """下面的模型输出不符合目标格式。请只修复格式，不要改变核心语义。
 
 原始任务:
@@ -275,6 +315,7 @@ TASK_TEMPLATE_GROUPS = {
     "specialist_reasoning": {"zh": SPECIALIST_REASONING_TEMPLATE_ZH, "en": SPECIALIST_REASONING_TEMPLATE_EN},
     "specialist_assessment": {"zh": SPECIALIST_ASSESSMENT_TEMPLATE_ZH, "en": SPECIALIST_ASSESSMENT_TEMPLATE_EN},
     "specialist_planning": {"zh": SPECIALIST_PLANNING_TEMPLATE_ZH, "en": SPECIALIST_PLANNING_TEMPLATE_EN},
+    "generic_refine": {"zh": GENERIC_REFINE_TEMPLATE_ZH, "en": GENERIC_REFINE_TEMPLATE_EN},
     "format_repair": {"zh": FORMAT_REPAIR_TEMPLATE_ZH, "en": FORMAT_REPAIR_TEMPLATE_EN},
     "self_check": {"zh": SELF_CHECK_TEMPLATE_ZH, "en": SELF_CHECK_TEMPLATE_EN},
     "rule_baseline_fast": {"zh": RULE_BASELINE_FAST_ZH, "en": RULE_BASELINE_FAST_EN},

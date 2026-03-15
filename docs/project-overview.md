@@ -29,6 +29,9 @@ The important offline path is now:
    - `1b_only`
    - `7b_only`
    - `cascade_final`
+   - `cascade_no_calibrator`
+   - `cascade_no_specialist_prompt`
+   - `cascade_no_draft_conditioning`
    - normalized request -> router -> risk -> specialist -> trace flow
 3. `core/`
    - `schemas.py`

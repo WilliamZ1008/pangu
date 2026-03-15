@@ -41,6 +41,22 @@ class PromptManager:
         )
         return prompt, f"{template_name}:{lang}"
 
+    def build_7b_generic_refine_prompt(self, sample, router_output) -> tuple[str, str]:
+        contract = get_output_contract(sample.task_key)
+        lang = sample.lang
+        template = TASK_TEMPLATE_GROUPS["generic_refine"][lang]
+        prompt = template.format(
+            prompt_text=sample.prompt_text,
+            predicted_task_family=router_output.predicted_task_family,
+            predicted_subject=router_output.predicted_subject,
+            confidence_label=router_output.confidence_label,
+            confidence_score=router_output.confidence_score,
+            tool_hint=router_output.tool_hint,
+            draft_answer=router_output.draft_answer,
+            output_instruction=contract[f"instruction_{lang}"],
+        )
+        return prompt, f"generic_refine:{lang}"
+
     def build_format_repair_prompt(self, sample, draft_output) -> tuple[str, str]:
         contract = get_output_contract(sample.task_key)
         lang = sample.lang

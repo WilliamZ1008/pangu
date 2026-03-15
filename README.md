@@ -20,6 +20,9 @@ Supported experiment systems:
 - `1b_only`
 - `7b_only`
 - `cascade_final`
+- `cascade_no_calibrator`
+- `cascade_no_specialist_prompt`
+- `cascade_no_draft_conditioning`
 
 ## Important directories
 
@@ -58,6 +61,7 @@ Supported experiment systems:
 ## Core workflow
 
 - `data_loader.py`: canonical shared-8 loading with stable sample IDs and deterministic splits
+- `split=ablation`: deterministic 25% stratified subset of the test split for low-cost ablations
 - `core/request_normalizer.py`: final normalized sample schema
 - `core/prompting/`: all final router/specialist/repair prompts
 - `services/model_clients.py`: all vLLM HTTP calls
@@ -111,6 +115,7 @@ Every run writes:
 - one prediction JSONL
 - one route trace JSONL
 - one summary JSON
+- one calibration summary JSON when `scripts/run_calibration.sh --output-tag <tag>` is used
 - optional judge cache entries when `--do-judge` is used
 
 If `--do-judge` is omitted, summaries are explicitly marked as diagnostic-only.

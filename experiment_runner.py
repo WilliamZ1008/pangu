@@ -75,11 +75,15 @@ class ExperimentRunner:
         prediction_file = self.result_store.save_predictions(run_name, prediction_rows)
         trace_file = self.result_store.save_traces(run_name, trace_rows)
         summary_file = self.result_store.save_summary(run_name, summary)
+        per_task_summary_file = self.result_store.save_per_task_summary(run_name, summary["per_task_summary"])
+        per_route_summary_file = self.result_store.save_per_route_summary(run_name, summary["per_route_summary"])
 
         return {
             "prediction_file": prediction_file,
             "trace_file": trace_file,
             "summary_file": summary_file,
+            "per_task_summary_file": per_task_summary_file,
+            "per_route_summary_file": per_route_summary_file,
             "summary": summary,
         }
 
@@ -218,6 +222,24 @@ class ExperimentRunner:
                 "route_reason": prediction_row.get("route_reason", ""),
                 "latency_seconds": prediction_row["latency_seconds"],
                 "seven_b_invoked": prediction_row["tokens_7b"] > 0,
+            }
+        )
+
+        router_stage = trace_row.get("raw_outputs", {}).get("1b", {})
+        seven_b_stages = trace_row.get("raw_outputs", {}).get("7b", [])
+        final_stage = seven_b_stages[-1] if seven_b_stages else router_stage
+        trace_row.update(
+            {
+                "router_output_raw": router_stage.get("text", "") if isinstance(router_stage, dict) else "",
+                "router_output_parsed": trace_row.get("router_output", {}),
+                "escalated": prediction_row["tokens_7b"] > 0,
+                "final_output_raw": final_stage.get("text", "") if isinstance(final_stage, dict) else "",
+                "validation_report": {
+                    "format_valid": prediction_row["format_valid"],
+                    "errors": final_stage.get("errors", []) if isinstance(final_stage, dict) else [],
+                    "notes": trace_row.get("notes", []),
+                },
+                "final_output_normalized": prediction_row["prediction"],
             }
         )
 

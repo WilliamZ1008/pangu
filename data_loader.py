@@ -54,8 +54,10 @@ SPLIT_ALIASES = {
     "all": "all",
     "dev": "dev",
     "test": "test",
-    "ablation": "dev",
+    "ablation": "ablation",
 }
+
+ABLATION_RATIO = 0.25
 
 
 def _first_present(raw: Dict[str, Any], *keys: str, default: Any = "") -> Any:
@@ -128,6 +130,12 @@ def _dev_size(total: int) -> int:
     if total <= 1:
         return total
     return max(1, int(total * DEV_RATIO + 0.5))
+
+
+def _fractional_size(total: int, ratio: float) -> int:
+    if total <= 0:
+        return 0
+    return max(1, int(total * ratio + 0.5))
 
 
 @dataclass
@@ -256,13 +264,21 @@ class DataLoader:
             per_task = {}
             dev_total = 0
             test_total = 0
+            ablation_total = 0
             for task_key in PRIMARY_TASK_KEYS:
                 dev_count = len(self.load_task_split(task_key, lang, "dev"))
                 test_count = len(self.load_task_split(task_key, lang, "test"))
-                per_task[task_key] = {"dev": dev_count, "test": test_count}
+                ablation_count = len(self.load_task_split(task_key, lang, "ablation"))
+                per_task[task_key] = {"dev": dev_count, "test": test_count, "ablation": ablation_count}
                 dev_total += dev_count
                 test_total += test_count
-            report[lang] = {"tasks": per_task, "dev_total": dev_total, "test_total": test_total}
+                ablation_total += ablation_count
+            report[lang] = {
+                "tasks": per_task,
+                "dev_total": dev_total,
+                "test_total": test_total,
+                "ablation_total": ablation_total,
+            }
         return report
 
     def _normalize_task_key(self, task_key: str) -> str:
@@ -295,8 +311,16 @@ class DataLoader:
         dev_boundary = _dev_size(len(shuffled))
         if split == "dev":
             subset = shuffled[:dev_boundary]
-        else:
+        elif split == "test":
             subset = shuffled[dev_boundary:]
+        else:
+            # Ablation uses a deterministic 25% stratified subset of the test split.
+            test_subset = shuffled[dev_boundary:]
+            ablation_subset = list(test_subset)
+            ablation_rng = random.Random(_stable_seed(str(RANDOM_SEED), lang, task_key, "ablation"))
+            ablation_rng.shuffle(ablation_subset)
+            ablation_boundary = _fractional_size(len(ablation_subset), ABLATION_RATIO)
+            subset = ablation_subset[:ablation_boundary]
 
         return sorted(subset, key=lambda item: item.source_row)
 

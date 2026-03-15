@@ -29,6 +29,9 @@ SUPPORTED_SYSTEMS = (
     "1b_only",
     "7b_only",
     "cascade_final",
+    "cascade_no_calibrator",
+    "cascade_no_specialist_prompt",
+    "cascade_no_draft_conditioning",
 )
 
 
@@ -256,8 +259,72 @@ class InferenceEngine:
         return result, trace, normalized
 
     def run_cascade_final(self, sample: Any) -> tuple[InferenceResult, RouteTrace, NormalizedSample]:
+        return self._run_cascade(
+            sample,
+            system_name="cascade_final",
+            use_calibrator=True,
+            use_specialist_prompt=True,
+            use_draft_conditioning=True,
+        )
+
+    def run_cascade_no_calibrator(self, sample: Any) -> tuple[InferenceResult, RouteTrace, NormalizedSample]:
+        return self._run_cascade(
+            sample,
+            system_name="cascade_no_calibrator",
+            use_calibrator=False,
+            use_specialist_prompt=True,
+            use_draft_conditioning=True,
+        )
+
+    def run_cascade_no_specialist_prompt(self, sample: Any) -> tuple[InferenceResult, RouteTrace, NormalizedSample]:
+        return self._run_cascade(
+            sample,
+            system_name="cascade_no_specialist_prompt",
+            use_calibrator=True,
+            use_specialist_prompt=False,
+            use_draft_conditioning=True,
+        )
+
+    def run_cascade_no_draft_conditioning(self, sample: Any) -> tuple[InferenceResult, RouteTrace, NormalizedSample]:
+        return self._run_cascade(
+            sample,
+            system_name="cascade_no_draft_conditioning",
+            use_calibrator=True,
+            use_specialist_prompt=True,
+            use_draft_conditioning=False,
+        )
+
+    def infer_dynamic(self, data_item: Any) -> Dict[str, Any]:
+        result, trace, _ = self.run_current_v3(data_item)
+        self_check_records = trace.raw_outputs.get("7b", [])
+        self_check_stage = {}
+        for record in self_check_records:
+            if isinstance(record, dict) and record.get("stage") == "self_check":
+                self_check_stage = record
+                break
+        return {
+            "final_answer": result.prediction,
+            "fast_response": self_check_stage.get("candidate_answer"),
+            "slow_thinking": None,
+            "eval_label": self_check_stage.get("label"),
+            "eval_reason": self_check_stage.get("reason"),
+            "is_slow_triggered": result.route == "7b_fast_to_7b_slow",
+        }
+
+    def _normalize(self, sample: Any) -> NormalizedSample:
+        return self.normalizer.normalize_data_item(sample)
+
+    def _run_cascade(
+        self,
+        sample: Any,
+        *,
+        system_name: str,
+        use_calibrator: bool,
+        use_specialist_prompt: bool,
+        use_draft_conditioning: bool,
+    ) -> tuple[InferenceResult, RouteTrace, NormalizedSample]:
         normalized = self._normalize(sample)
-        tracer = RouteTracer().start(normalized, "cascade_final")
+        tracer = RouteTracer().start(normalized, system_name)
 
         router_output, router_stage, latency_1b, tokens_1b = self._run_router_stage(normalized)
         tracer.record_1b(
@@ -269,11 +336,19 @@ class InferenceEngine:
 
         specialist_name = self.expert_router.select(normalized, router_output)
         features = self.risk_calibrator.extract_features(normalized, router_output)
-        risk_score = self.risk_calibrator.score(features)
-        risk_threshold = self.risk_calibrator.threshold_for(specialist_name)
-        should_escalate = self.risk_calibrator.should_escalate(normalized, features, risk_score)
-
         normalized_1b = self.output_parser.repair_or_normalize(normalized, router_output.draft_answer)
+
+        if use_calibrator:
+            risk_score = self.risk_calibrator.score(features)
+            risk_threshold = self.risk_calibrator.threshold_for(specialist_name)
+            should_escalate = self.risk_calibrator.should_escalate(normalized, features, risk_score)
+            risk_note = "deterministic calibrated routing"
+        else:
+            risk_score = self._naive_router_risk(router_output, normalized_1b)
+            risk_threshold = 0.50
+            should_escalate = self._should_escalate_without_calibrator(router_output, normalized_1b)
+            risk_note = "ablation: naive uncalibrated routing"
+
         if not should_escalate and normalized_1b["errors"]:
             should_escalate = True
 
@@ -283,14 +358,16 @@ class InferenceEngine:
             specialist_name=specialist_name,
             accepted_by_1b=not should_escalate,
             features=features.to_dict(),
-            note="deterministic calibrated routing",
+            note=risk_note,
         )
 
         if should_escalate:
+            router_view = router_output if use_draft_conditioning else self._without_draft(router_output)
             prediction, format_valid, stage_records, latency_7b, tokens_7b = self._run_specialist_stage(
                 normalized,
-                router_output,
+                router_view,
                 specialist_name,
+                use_specialist_prompt=use_specialist_prompt,
             )
             tracer.record_7b(
                 latency_seconds=latency_7b,
@@ -316,7 +393,7 @@ class InferenceEngine:
         )
         result = self._build_result(
             normalized,
-            system_name="cascade_final",
+            system_name=system_name,
             route=route,
             accepted_by_1b=accepted_by_1b,
             specialist_name=specialist_name,
@@ -330,26 +407,6 @@ class InferenceEngine:
             route_reason=route_reason,
         )
         return result, trace, normalized
-
-    def infer_dynamic(self, data_item: Any) -> Dict[str, Any]:
-        result, trace, _ = self.run_current_v3(data_item)
-        self_check_records = trace.raw_outputs.get("7b", [])
-        self_check_stage = {}
-        for record in self_check_records:
-            if isinstance(record, dict) and record.get("stage") == "self_check":
-                self_check_stage = record
-                break
-        return {
-            "final_answer": result.prediction,
-            "fast_response": self_check_stage.get("candidate_answer"),
-            "slow_thinking": None,
-            "eval_label": self_check_stage.get("label"),
-            "eval_reason": self_check_stage.get("reason"),
-            "is_slow_triggered": result.route == "7b_fast_to_7b_slow",
-        }
-
-    def _normalize(self, sample: Any) -> NormalizedSample:
-        return self.normalizer.normalize_data_item(sample)
 
     def _run_router_stage(self, sample: NormalizedSample) -> tuple[RouterOutput, Dict[str, Any], float, int]:
         prompt, template_name = self.prompt_manager.build_1b_router_prompt(sample)
@@ -380,8 +437,19 @@ class InferenceEngine:
         sample: NormalizedSample,
         router_output: RouterOutput,
         specialist_name: str,
+        *,
+        use_specialist_prompt: bool = True,
     ) -> tuple[Any, bool, Dict[str, Any], float, int]:
-        prompt, template_name = self.prompt_manager.build_7b_specialist_prompt(sample, router_output, specialist_name)
+        if use_specialist_prompt:
+            prompt, template_name = self.prompt_manager.build_7b_specialist_prompt(
+                sample,
+                router_output,
+                specialist_name,
+            )
+            stage_name = "specialist_7b"
+        else:
+            prompt, template_name = self.prompt_manager.build_7b_generic_refine_prompt(sample, router_output)
+            stage_name = "generic_refine_7b"
         target = self.client_registry.get("7b")
         generation = self.client.generate_text(
             prompt=prompt,
@@ -392,7 +460,7 @@ class InferenceEngine:
         )
         format_valid, normalized = self.output_parser.validate_prediction(sample, generation.text)
         stage_records = {
-            "stage": "specialist_7b",
+            "stage": stage_name,
             "tier": "7b",
             "prompt_template": template_name,
             "prompt": prompt,
@@ -524,6 +592,38 @@ class InferenceEngine:
             question=sample.question,
             prompt=sample.prompt_text,
         )
+
+    def _without_draft(self, router_output: RouterOutput) -> RouterOutput:
+        return RouterOutput(
+            predicted_task_family=router_output.predicted_task_family,
+            predicted_subject=router_output.predicted_subject,
+            draft_answer="",
+            confidence_label=router_output.confidence_label,
+            confidence_score=router_output.confidence_score,
+            format_signals=router_output.format_signals,
+            tool_hint=router_output.tool_hint,
+            raw_text=router_output.raw_text,
+            parse_ok=router_output.parse_ok,
+        )
+
+    def _naive_router_risk(self, router_output: RouterOutput, normalized_1b: Dict[str, Any]) -> float:
+        risk = 1.0 - float(router_output.confidence_score)
+        if router_output.confidence_label == "low":
+            risk += 0.10
+        if not router_output.parse_ok:
+            risk += 0.10
+        if normalized_1b["errors"]:
+            risk += 0.20
+        return max(0.0, min(1.0, risk))
+
+    def _should_escalate_without_calibrator(self, router_output: RouterOutput, normalized_1b: Dict[str, Any]) -> bool:
+        if not router_output.parse_ok:
+            return True
+        if normalized_1b["errors"]:
+            return True
+        if router_output.confidence_label == "low":
+            return True
+        return router_output.confidence_score < 0.50
 
     def _build_result(
         self,

@@ -1,0 +1,28 @@
+{
+  "system_name": "cascade_no_calibrator",
+  "lang": "zh",
+  "split": "ablation",
+  "generated_at": "2026-03-14T17:48:24.205692",
+  "warnings": [
+    "Judge not run. This summary is diagnostic only and must not be presented as a paper-ready result."
+  ],
+  "overall_summary": {
+    "total_items": 0,
+    "quality_score": null,
+    "format_validity": 0.0,
+    "task_match_rate": null,
+    "latency_avg": 0.0,
+    "latency_p50": 0.0,
+    "latency_p90": 0.0,
+    "accepted_by_1b_rate": null,
+    "accepted_by_1b_quality": null,
+    "escalated_quality": null,
+    "7b_invocation_rate": 0.0,
+    "tokens_1b_avg": 0.0,
+    "tokens_7b_avg": 0.0,
+    "estimated_cost_proxy": 0.0,
+    "judge_score_avg": null
+  },
+  "per_task_summary": {},
+  "per_route_summary": {}
+}
