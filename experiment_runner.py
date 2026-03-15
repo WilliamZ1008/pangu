@@ -3,6 +3,7 @@ Shared batch runner for serial and parallel offline experiments.
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from math import ceil
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from core.request_normalizer import RequestNormalizer
@@ -42,6 +43,7 @@ class ExperimentRunner:
         split: str,
         do_judge: bool = False,
         sample_limit: Optional[int] = None,
+        sample_fraction: Optional[float] = None,
         max_workers: int = 1,
         output_tag: str = "",
     ) -> Dict[str, object]:
@@ -49,12 +51,18 @@ class ExperimentRunner:
             raise ValueError(f"Unsupported system: {system_name}")
 
         samples = self._load_samples(lang, split)
+        if sample_fraction is not None:
+            samples = self._subset_samples(samples, sample_fraction)
         if sample_limit is not None:
             samples = samples[:sample_limit]
 
         prediction_rows, trace_rows = self._run_samples(samples, system_name, split, max_workers=max_workers)
 
         warnings: List[str] = []
+        if sample_fraction is not None:
+            warnings.append(
+                f"Deterministic stratified subset used for speed: sample_fraction={sample_fraction:.4f} per task."
+            )
         if do_judge:
             prediction_rows = JudgeRunner().evaluate_rows(prediction_rows)
         else:
@@ -93,6 +101,7 @@ class ExperimentRunner:
         split_plan: Sequence[Dict[str, str]],
         do_judge: bool = False,
         sample_limit: Optional[int] = None,
+        sample_fraction: Optional[float] = None,
         max_workers: int = 1,
         output_tag: str = "",
     ) -> List[Dict[str, object]]:
@@ -106,6 +115,7 @@ class ExperimentRunner:
                         split=plan["split"],
                         do_judge=do_judge,
                         sample_limit=sample_limit,
+                        sample_fraction=sample_fraction,
                         max_workers=max_workers,
                         output_tag=output_tag,
                     )
@@ -119,6 +129,27 @@ class ExperimentRunner:
                 samples.extend(self.data_loader.load_primary_split(lang_name, split))
             return samples
         return self.data_loader.load_primary_split(lang, split)
+
+    def _subset_samples(self, samples, sample_fraction: float):
+        if sample_fraction <= 0 or sample_fraction > 1:
+            raise ValueError(f"sample_fraction must be in (0, 1], got {sample_fraction}")
+        if sample_fraction >= 1:
+            return list(samples)
+
+        per_task = {}
+        task_order: List[str] = []
+        for sample in samples:
+            if sample.task_key not in per_task:
+                per_task[sample.task_key] = []
+                task_order.append(sample.task_key)
+            per_task[sample.task_key].append(sample)
+
+        subset = []
+        for task_key in task_order:
+            task_samples = per_task[task_key]
+            keep = max(1, ceil(len(task_samples) * sample_fraction))
+            subset.extend(task_samples[:keep])
+        return subset
 
     def _run_samples(self, samples, system_name: str, split: str, max_workers: int = 1):
         sample_order = {sample.sample_id: index for index, sample in enumerate(samples)}

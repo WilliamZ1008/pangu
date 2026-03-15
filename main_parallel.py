@@ -20,6 +20,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--do-judge", action="store_true", help="Run the optional GPT judge after predictions.")
     parser.add_argument("--sample-limit", type=int, help="Optional hard cap for debugging a run.")
+    parser.add_argument(
+        "--sample-fraction",
+        type=float,
+        help="Optional deterministic stratified fraction to keep per task for faster pilot runs.",
+    )
     parser.add_argument("--max-workers", type=int, default=4, help="Number of worker threads.")
     parser.add_argument("--output-tag", default="", help="Optional tag inserted into artifact filenames.")
     return parser.parse_args()
@@ -34,6 +39,7 @@ def main() -> None:
         split=args.split,
         do_judge=args.do_judge,
         sample_limit=args.sample_limit,
+        sample_fraction=args.sample_fraction,
         max_workers=args.max_workers,
         output_tag=args.output_tag,
     )
