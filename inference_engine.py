@@ -340,7 +340,7 @@ class InferenceEngine:
 
         if use_calibrator:
             risk_score = self.risk_calibrator.score(features)
-            risk_threshold = self.risk_calibrator.threshold_for(specialist_name)
+            risk_threshold = self.risk_calibrator.threshold_for_sample(normalized, specialist_name)
             should_escalate = self.risk_calibrator.should_escalate(normalized, features, risk_score)
             risk_note = "deterministic calibrated routing"
         else:

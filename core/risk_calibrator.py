@@ -27,6 +27,11 @@ class RiskCalibrator:
         "planning": 0.40,
     }
 
+    TASK_KEY_THRESHOLDS = {
+        "Q&A": 0.05,
+        "EC": 0.05,
+    }
+
     UNCERTAINTY_PATTERNS = [
         r"\bmaybe\b",
         r"\bnot sure\b",
@@ -76,11 +81,17 @@ class RiskCalibrator:
         return max(0.0, min(1.0, risk))
 
     def should_escalate(self, sample: NormalizedSample, features: RiskFeatures, score: float) -> bool:
-        threshold = self.THRESHOLDS.get(self._family_to_specialist(sample.task_key, sample.task_family), 0.45)
+        threshold = self.threshold_for_sample(sample)
         return score >= threshold
 
     def threshold_for(self, specialist_name: str) -> float:
         return self.THRESHOLDS.get(specialist_name, 0.45)
+
+    def threshold_for_sample(self, sample: NormalizedSample, specialist_name: str | None = None) -> float:
+        if sample.task_key in self.TASK_KEY_THRESHOLDS:
+            return self.TASK_KEY_THRESHOLDS[sample.task_key]
+        resolved_specialist = specialist_name or self._family_to_specialist(sample.task_key, sample.task_family)
+        return self.threshold_for(resolved_specialist)
 
     def _family_to_specialist(self, task_key: str, task_family: str) -> str:
         if task_key == "AG":

@@ -38,6 +38,25 @@ class OutputParser:
         "additional notes if needed",
     }
 
+    GENERIC_PLACEHOLDER_PATTERNS = (
+        "draft answer",
+        "your draft answer",
+        "your answer here",
+        "[your answer]",
+        "placeholder",
+        "tries to satisfy the target contract",
+    )
+
+    SCAFFOLD_PATTERNS = (
+        "predicted_task_",
+        "format_signals",
+        "output the json",
+        "let's think step by step",
+        "understanding the task",
+        "final json output",
+        "output format",
+    )
+
     def parse_router_output(self, text: str) -> RouterOutput:
         payloads = self._extract_json_payloads(text)
         if not payloads:
@@ -101,18 +120,28 @@ class OutputParser:
                 try:
                     payload = json.loads(payload)
                 except Exception:
+                    salvaged = self._salvage_freeform_prediction(sample, prediction)
+                    if salvaged is not None:
+                        return salvaged
                     return {
                         "normalized_prediction": prediction,
                         "errors": ["json_parse_failed"],
                     }
+            else:
+                salvaged = self._salvage_non_dict_payload(sample, payload)
+                if salvaged is not None:
+                    return salvaged
             if not isinstance(payload, dict):
+                salvaged = self._salvage_non_dict_payload(sample, payload)
+                if salvaged is not None:
+                    return salvaged
                 return {
                     "normalized_prediction": prediction,
                     "errors": ["json_root_not_object"],
                 }
 
             normalized = self._normalize_task_payload(sample.task_key, payload)
-            missing = [key for key in contract["required_keys"] if key not in normalized]
+            missing = self._missing_required_keys(contract["required_keys"], normalized)
             return {
                 "normalized_prediction": normalized,
                 "errors": [f"missing_key:{key}" for key in missing],
@@ -192,6 +221,283 @@ class OutputParser:
         if payloads:
             return payloads[-1]
         return None
+
+    def _salvage_freeform_prediction(self, sample, prediction) -> dict | None:
+        if not isinstance(prediction, str):
+            return None
+        text = prediction.strip()
+        if not self._is_meaningful_output(text):
+            return None
+
+        task_key = sample.task_key
+        if task_key == "Q&A":
+            if self._looks_like_scaffold(text):
+                return None
+            direct_answer = self._extract_direct_answer(text)
+            if not self._is_meaningful_value(direct_answer):
+                return None
+            explanation = self._build_short_explanation(text, direct_answer)
+            return {
+                "normalized_prediction": {
+                    "direct_answer": direct_answer,
+                    "short_explanation": explanation,
+                },
+                "errors": [],
+            }
+
+        if task_key == "EC":
+            if self._looks_like_scaffold(text):
+                return None
+            corrected_answer = self._extract_corrected_answer(text)
+            if not self._is_meaningful_output(corrected_answer):
+                return None
+            return {
+                "normalized_prediction": {
+                    "error_list": [],
+                    "corrected_answer": corrected_answer,
+                    "explanation": self._build_rewrite_explanation(text, corrected_answer),
+                },
+                "errors": [],
+            }
+
+        if task_key == "IP":
+            hint_source = self._extract_embedded_field(text, "draft_answer") or text
+            hints = self._coerce_hints(hint_source)
+            if not self._is_meaningful_value(hints):
+                return None
+            return {
+                "normalized_prediction": {"hints": hints},
+                "errors": [],
+            }
+
+        if task_key == "PLS":
+            content = self._extract_embedded_field(text, "draft_answer") or text
+            if not self._is_meaningful_output(content):
+                return None
+            return {
+                "normalized_prediction": {"personalized_learning_content": content},
+                "errors": [],
+            }
+
+        if task_key == "AG":
+            score_source = self._extract_embedded_field(text, "draft_answer") or text
+            score = self._extract_score_value(score_source)
+            if not self._is_meaningful_value(score):
+                return None
+            return {
+                "normalized_prediction": {
+                    "score": score,
+                    "evidence": score_source,
+                    "feedback": score_source,
+                },
+                "errors": [],
+            }
+
+        return None
+
+    def _salvage_non_dict_payload(self, sample, payload) -> dict | None:
+        if sample.task_key == "IP" and isinstance(payload, list) and payload:
+            return {
+                "normalized_prediction": {"hints": payload},
+                "errors": [],
+            }
+        if sample.task_key == "PLS" and isinstance(payload, (list, dict)) and payload:
+            return {
+                "normalized_prediction": {"personalized_learning_content": payload},
+                "errors": [],
+            }
+        return None
+
+    def _missing_required_keys(self, required_keys: list[str], payload: Dict[str, Any]) -> list[str]:
+        return [key for key in required_keys if self._is_missing_required_value(key, payload.get(key))]
+
+    def _is_missing_required_value(self, key: str, value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not self._is_meaningful_output(value)
+        if isinstance(value, list):
+            if key == "error_list":
+                return False
+            return not value
+        if isinstance(value, dict):
+            return not value
+        return False
+
+    def _is_meaningful_value(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return self._is_meaningful_output(value)
+        if isinstance(value, (list, dict, tuple, set)):
+            return len(value) > 0
+        return True
+
+    def _is_meaningful_output(self, text: str) -> bool:
+        normalized = str(text).strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if lowered in self.ROUTER_PLACEHOLDERS:
+            return False
+        if any(pattern in lowered for pattern in self.GENERIC_PLACEHOLDER_PATTERNS):
+            return False
+        return True
+
+    def _extract_direct_answer(self, text: str) -> Any:
+        stripped = text.strip()
+        candidate = (
+            self._extract_embedded_field(stripped, "direct_answer")
+            or self._extract_embedded_field(stripped, "draft_answer")
+            or stripped
+        )
+        scaffold = self._looks_like_scaffold(stripped)
+        option_text_match = re.match(r"^\s*([A-D])([\.\):])\s+(.+)$", candidate, re.IGNORECASE)
+        if option_text_match:
+            option_text = candidate.strip()
+            if self._is_meaningful_output(option_text):
+                return option_text
+        choice_block = re.match(
+            r"^\s*([A-D])(?:[\.\):]|$)(?:\s*[,/;，、]\s*([A-D])(?:[\.\):]|$))*",
+            candidate,
+            re.IGNORECASE,
+        )
+        if choice_block:
+            labels = re.findall(r"([A-D])(?:[\.\):]|$)", choice_block.group(0), re.IGNORECASE)
+            labels = [label.upper() for label in labels]
+            if len(labels) > 1:
+                return labels
+            if labels:
+                return labels[0]
+
+        answer_phrase = re.search(
+            r"(?:correct answer is|answer is|答案是|应选|选择|option)\s*([A-D])(?:[\.\):]|$)",
+            candidate,
+            re.IGNORECASE,
+        )
+        if answer_phrase:
+            return answer_phrase.group(1).upper()
+
+        simple_choices = re.findall(r"(?<![A-Za-z])([A-D])(?:[\.\):]|$)", candidate, re.IGNORECASE)
+        if len(simple_choices) == 1 and len(candidate) <= 24:
+            return simple_choices[0].upper()
+
+        trailing_math = self._extract_rhs_tail(candidate)
+        if trailing_math:
+            return trailing_math
+
+        predicate_tail = re.search(
+            r"(?:is|are|was|were|equals|结果是|为)\s*([^\n。.!?]{1,80})$",
+            candidate,
+            re.IGNORECASE,
+        )
+        if predicate_tail:
+            answer_candidate = predicate_tail.group(1).strip(" \"'`")
+            if self._is_meaningful_output(answer_candidate):
+                return answer_candidate
+
+        if scaffold:
+            return None
+
+        first_line = candidate.splitlines()[0].strip()
+        if len(candidate.splitlines()) <= 2 and len(first_line) <= 120 and self._is_meaningful_output(first_line):
+            return first_line
+        return None
+
+    def _build_short_explanation(self, text: str, direct_answer: Any) -> str:
+        stripped = text.strip()
+        if isinstance(direct_answer, list):
+            return stripped
+        answer_text = str(direct_answer).strip()
+        if stripped and stripped != answer_text:
+            return stripped
+        return f"Extracted direct answer: {answer_text}"
+
+    def _extract_corrected_answer(self, text: str) -> str:
+        stripped = text.strip()
+        candidate = (
+            self._extract_embedded_field(stripped, "corrected_answer")
+            or self._extract_embedded_field(stripped, "draft_answer")
+            or stripped
+        )
+        scaffold = self._looks_like_scaffold(stripped)
+        if scaffold:
+            return ""
+        labeled = re.search(
+            r"(?:corrected answer|correct answer|修正后答案|纠正后答案|答案)\s*[:：]\s*(.+)$",
+            candidate,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if labeled:
+            labeled_candidate = labeled.group(1).strip()
+            if self._is_meaningful_output(labeled_candidate):
+                return labeled_candidate
+
+        rhs_tail = self._extract_rhs_tail(candidate)
+        if rhs_tail:
+            return rhs_tail
+
+        first_line = candidate.splitlines()[0].strip()
+        if len(candidate.splitlines()) <= 2 and len(first_line) <= 120 and self._is_meaningful_output(first_line):
+            return first_line
+        return ""
+
+    def _build_rewrite_explanation(self, text: str, corrected_answer: str) -> str:
+        stripped = text.strip()
+        if stripped and stripped != corrected_answer:
+            return stripped
+        return f"Corrected answer extracted from 1B draft: {corrected_answer}"
+
+    def _coerce_hints(self, text: str) -> Any:
+        lines = []
+        for raw_line in text.splitlines():
+            cleaned = re.sub(r"^\s*(?:[-*•]|\d+[\.\)])\s*", "", raw_line).strip()
+            if cleaned and self._is_meaningful_output(cleaned):
+                lines.append(cleaned)
+        if len(lines) >= 2:
+            return lines
+        if lines:
+            return lines[0]
+        return text.strip()
+
+    def _extract_score_value(self, text: str) -> Any:
+        score_label = re.search(
+            r"(?:score|grade|评分)\s*[:：]?\s*([A-F]|[0-9]+(?:\.[0-9]+)?%?)",
+            text,
+            re.IGNORECASE,
+        )
+        if score_label:
+            return score_label.group(1)
+
+        numeric_only = re.fullmatch(r"\s*([A-F]|[0-9]+(?:\.[0-9]+)?%?)\s*", text, re.IGNORECASE)
+        if numeric_only:
+            return numeric_only.group(1)
+        return None
+
+    def _extract_rhs_tail(self, text: str) -> str | None:
+        if "=" not in text:
+            return None
+        candidate = text.split("=")[-1].strip().strip("。.!? ")
+        if candidate and len(candidate) <= 80 and self._is_meaningful_output(candidate):
+            return candidate
+        return None
+
+    def _extract_embedded_field(self, text: str, field_name: str) -> str:
+        values = re.findall(rf'"{field_name}"\s*:\s*"([^"]+)"', text, re.IGNORECASE)
+        values.extend(re.findall(rf"{field_name}\s*[:：]\s*([^\n]+)", text, re.IGNORECASE))
+        cleaned = []
+        for value in values:
+            candidate = value.strip().strip(",")
+            if candidate and self._is_meaningful_output(candidate):
+                cleaned.append(candidate)
+        if not cleaned:
+            return ""
+        cleaned = sorted(cleaned, key=lambda value: (len(value), value))
+        return cleaned[0]
+
+    def _looks_like_scaffold(self, text: str) -> bool:
+        lowered = text.lower()
+        return any(pattern in lowered for pattern in self.SCAFFOLD_PATTERNS)
 
     def _extract_json_payloads(self, text: str) -> list[str]:
         payloads = []
@@ -333,9 +639,7 @@ class OutputParser:
         text = str(value).strip()
         if not text:
             return False
-        if text.lower() in self.ROUTER_PLACEHOLDERS:
-            return False
-        if field_name == "draft_answer" and text.lower().startswith("draft answer"):
+        if not self._is_meaningful_output(text):
             return False
         if "|" in text and field_name != "draft_answer":
             return False
